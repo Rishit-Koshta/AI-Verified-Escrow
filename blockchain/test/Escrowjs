@@ -1,0 +1,104 @@
+
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+
+describe("Escrow", function () {
+  async function deployEscrow() {
+    const [client, freelancer, arbitrator, stranger] =
+      await ethers.getSigners();
+
+    const amount = ethers.parseEther("1");
+
+    const Escrow = await ethers.getContractFactory("Escrow");
+
+    const escrow = await Escrow.deploy(
+      freelancer.address,
+      arbitrator.address,
+      amount
+    );
+
+    await escrow.waitForDeployment();
+
+    return { escrow, client, freelancer, arbitrator, stranger, amount };
+  }
+
+  it("accepts the exact deposit from the client", async function () {
+    const { escrow, client, amount } = await deployEscrow();
+
+    await expect(
+      escrow.connect(client).deposit({ value: amount })
+    ).to.emit(escrow, "Deposited");
+
+    expect(await escrow.funded()).to.equal(true);
+    expect(await ethers.provider.getBalance(
+      await escrow.getAddress()
+    )).to.equal(amount);
+  });
+
+  it("rejects deposits from unauthorized accounts", async function () {
+    const { escrow, stranger, amount } = await deployEscrow();
+
+    await expect(
+      escrow.connect(stranger).deposit({ value: amount })
+    ).to.be.revertedWith("Only client");
+  });
+
+  it("releases funds after submission and approval", async function () {
+    const { escrow, client, freelancer, amount } =
+      await deployEscrow();
+
+    await escrow.connect(client).deposit({ value: amount });
+    await escrow.connect(freelancer).submitMilestone();
+    await escrow.connect(client).approveMilestone();
+
+    const before = await ethers.provider.getBalance(
+      freelancer.address
+    );
+
+    await expect(
+      escrow.connect(client).releasePayment()
+    ).to.emit(escrow, "PaymentReleased");
+
+    const after = await ethers.provider.getBalance(
+      freelancer.address
+    );
+
+    expect(after - before).to.equal(amount);
+    expect(await escrow.released()).to.equal(true);
+    expect(await ethers.provider.getBalance(
+      await escrow.getAddress()
+    )).to.equal(0n);
+  });
+
+  it("prevents release while a dispute is active", async function () {
+    const { escrow, client, freelancer, amount } =
+      await deployEscrow();
+
+    await escrow.connect(client).deposit({ value: amount });
+    await escrow.connect(freelancer).submitMilestone();
+    await escrow.connect(client).approveMilestone();
+    await escrow.connect(freelancer).raiseDispute();
+
+    await expect(
+      escrow.connect(client).releasePayment()
+    ).to.be.revertedWith("Dispute active");
+  });
+
+  it("allows the arbitrator to refund a disputed escrow", async function () {
+    const { escrow, client, freelancer, arbitrator, amount } =
+      await deployEscrow();
+
+    await escrow.connect(client).deposit({ value: amount });
+    await escrow.connect(freelancer).submitMilestone();
+    await escrow.connect(freelancer).raiseDispute();
+
+    await expect(
+      escrow.connect(arbitrator).resolveDispute(false)
+    ).to.emit(escrow, "DisputeResolved");
+
+    expect(await escrow.refunded()).to.equal(true);
+    expect(await ethers.provider.getBalance(
+      await escrow.getAddress()
+    )).to.equal(0n);
+  });
+});
