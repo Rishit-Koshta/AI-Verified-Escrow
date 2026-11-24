@@ -166,6 +166,8 @@ public class ApplicationService {
 
         project.assignFreelancer(selected.getFreelancer());
         selected.accept();
+        project = projectRepository.save(project);
+        selected = applicationRepository.save(selected);
 
         List<ProjectApplication> applications =
                 applicationRepository
@@ -175,6 +177,7 @@ public class ApplicationService {
             if (!application.getId().equals(selected.getId()) &&
                     application.getStatus() == ApplicationStatus.PENDING) {
                 application.reject();
+                applicationRepository.save(application);
             }
         }
 

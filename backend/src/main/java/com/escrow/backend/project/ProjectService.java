@@ -56,19 +56,58 @@ public class ProjectService {
     @Transactional
     public void markProjectInProgress(Long projectId) {
         Project project = getProject(projectId);
+
+        if (project.getStatus() == ProjectStatus.IN_PROGRESS) {
+            return;
+        }
+
+        if (project.getStatus() != ProjectStatus.ASSIGNED && project.getStatus() != ProjectStatus.OPEN) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Only assigned projects can move to IN_PROGRESS"
+            );
+        }
+
         project.updateStatus(ProjectStatus.IN_PROGRESS);
+        projectRepository.save(project);
     }
 
     @Transactional
     public void markProjectCompleted(Long projectId) {
         Project project = getProject(projectId);
+
+        if (project.getStatus() == ProjectStatus.COMPLETED) {
+            return;
+        }
+
+        if (project.getStatus() != ProjectStatus.IN_PROGRESS) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Only in-progress projects can be completed"
+            );
+        }
+
         project.updateStatus(ProjectStatus.COMPLETED);
+        projectRepository.save(project);
     }
 
     @Transactional
     public void markProjectCancelled(Long projectId) {
         Project project = getProject(projectId);
+
+        if (project.getStatus() == ProjectStatus.CANCELLED) {
+            return;
+        }
+
+        if (project.getStatus() != ProjectStatus.IN_PROGRESS) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Only in-progress projects can be cancelled through escrow"
+            );
+        }
+
         project.updateStatus(ProjectStatus.CANCELLED);
+        projectRepository.save(project);
     }
 
     @Transactional
@@ -170,48 +209,26 @@ public class ProjectService {
             String email) {
 
         AppUser user = getCurrentUser(email);
+        requireRole(user, UserRole.CLIENT);
+
         Project project = getProject(id);
+        requireOwner(project, user);
 
-        boolean isClient =
-                project.getClient().getId().equals(user.getId());
+        // The client may cancel an open project.
+        if (project.getStatus() == ProjectStatus.OPEN
+                && newStatus == ProjectStatus.CANCELLED) {
 
-        boolean isFreelancer =
-                project.getFreelancer() != null &&
-                        project.getFreelancer().getId().equals(user.getId());
-
-        if (!isClient && !isFreelancer) {
-            throw new ResponseStatusException(
-                    HttpStatus.FORBIDDEN,
-                    "You are not a participant in this project");
+            project.updateStatus(ProjectStatus.CANCELLED);
+            return ProjectResponse.from(project);
         }
 
-        ProjectStatus current = project.getStatus();
-
-        boolean allowed = switch (current) {
-            case ASSIGNED ->
-                    newStatus == ProjectStatus.IN_PROGRESS &&
-                            isFreelancer;
-
-            case IN_PROGRESS ->
-                    (newStatus == ProjectStatus.SUBMITTED && isFreelancer) ||
-                            (newStatus == ProjectStatus.CANCELLED && isClient);
-
-            case SUBMITTED ->
-                    (newStatus == ProjectStatus.COMPLETED && isClient) ||
-                            (newStatus == ProjectStatus.IN_PROGRESS && isClient);
-
-            default -> false;
-        };
-
-        if (!allowed) {
-            throw new ResponseStatusException(
-                    HttpStatus.CONFLICT,
-                    "Invalid project status transition");
-        }
-
-        project.updateStatus(newStatus);
-
-        return ProjectResponse.from(project);
+        // All other lifecycle changes are managed internally
+        // by application acceptance and escrow transactions.
+        throw new ResponseStatusException(
+                HttpStatus.CONFLICT,
+                "This project status cannot be changed manually. "
+                        + "Use the application or escrow workflow."
+        );
     }
 
     @Transactional

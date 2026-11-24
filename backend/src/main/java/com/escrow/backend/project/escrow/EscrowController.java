@@ -78,6 +78,91 @@ public class EscrowController {
     }
 
     // --------------------------------------------------
+    // GET ESCROW BY PROJECT ID
+    // --------------------------------------------------
+
+    @GetMapping("/project/{projectId}")
+    public EscrowResponse getEscrowByProjectId(
+            @PathVariable Long projectId,
+            Authentication authentication
+    ) {
+        return EscrowResponse.from(
+                escrowService.getEscrowByProjectId(
+                        projectId,
+                        authentication.getName()
+                )
+        );
+    }
+
+    // --------------------------------------------------
+    // GET DELIVERABLES LIST
+    // --------------------------------------------------
+
+    @GetMapping("/{escrowId}/deliverables")
+    public List<DeliverableResponse> getDeliverables(
+            @PathVariable Long escrowId,
+            Authentication authentication
+    ) {
+        return deliverableService.getDeliverables(
+                escrowId,
+                authentication.getName()
+        ).stream().map(DeliverableResponse::from).toList();
+    }
+
+    // --------------------------------------------------
+    // GET SINGLE DELIVERABLE
+    // --------------------------------------------------
+
+    @GetMapping("/{escrowId}/deliverables/{deliverableId}")
+    public DeliverableResponse getDeliverable(
+            @PathVariable Long escrowId,
+            @PathVariable Long deliverableId,
+            Authentication authentication
+    ) {
+        return DeliverableResponse.from(
+                deliverableService.getDeliverable(
+                        escrowId,
+                        deliverableId,
+                        authentication.getName()
+                )
+        );
+    }
+
+    // --------------------------------------------------
+    // GET TRANSACTIONS
+    // --------------------------------------------------
+
+    @GetMapping("/{escrowId}/transactions")
+    public List<TransactionResponse> getTransactions(
+            @PathVariable Long escrowId,
+            Authentication authentication
+    ) {
+        return escrowService.getTransactions(
+                escrowId,
+                authentication.getName()
+        ).stream().map(TransactionResponse::from).toList();
+    }
+
+    // --------------------------------------------------
+    // RAISE DISPUTE
+    // --------------------------------------------------
+
+    @PostMapping("/{escrowId}/dispute")
+    public EscrowResponse raiseDispute(
+            @PathVariable Long escrowId,
+            @Valid @RequestBody DisputeRequest request,
+            Authentication authentication
+    ) {
+        return EscrowResponse.from(
+                escrowService.raiseDispute(
+                        escrowId,
+                        request,
+                        authentication.getName()
+                )
+        );
+    }
+
+    // --------------------------------------------------
     // RECORD A META MASK TRANSACTION
     // --------------------------------------------------
 
@@ -111,6 +196,25 @@ public class EscrowController {
         Deliverable deliverable = escrowService.submitDeliverable(
                 escrowId,
                 request,
+                authentication.getName()
+        );
+
+        return DeliverableResponse.from(deliverable);
+    }
+
+    // --------------------------------------------------
+    // RETRY AI VERIFICATION
+    // --------------------------------------------------
+
+    @PostMapping("/{escrowId}/deliverables/{deliverableId}/retry-verification")
+    public DeliverableResponse retryVerification(
+            @PathVariable Long escrowId,
+            @PathVariable Long deliverableId,
+            Authentication authentication
+    ) {
+        Deliverable deliverable = escrowService.retryVerification(
+                escrowId,
+                deliverableId,
                 authentication.getName()
         );
 
@@ -155,54 +259,5 @@ public class EscrowController {
         );
 
         return DeliverableResponse.from(deliverable);
-    }
-
-    // --------------------------------------------------
-    // DISPUTE
-    // --------------------------------------------------
-
-    @PostMapping("/{escrowId}/dispute")
-    public EscrowResponse raiseDispute(
-            @PathVariable Long escrowId,
-            @Valid @RequestBody DisputeRequest request,
-            Authentication authentication
-    ) {
-        Escrow escrow = escrowService.raiseDispute(
-                escrowId,
-                request,
-                authentication.getName()
-        );
-
-        return EscrowResponse.from(escrow);
-    }
-
-    // --------------------------------------------------
-    // TRANSACTION HISTORY
-    // --------------------------------------------------
-
-    @GetMapping("/{escrowId}/transactions")
-    public List<TransactionResponse> getTransactions(
-            @PathVariable Long escrowId,
-            Authentication authentication
-    ) {
-        return escrowService.getTransactions(
-                        escrowId,
-                        authentication.getName()
-                ).stream()
-                .map(TransactionResponse::from)
-                .toList();
-    }
-    @GetMapping("/{escrowId}/deliverables")
-    public List<DeliverableResponse> getDeliverables(
-            @PathVariable Long escrowId,
-            Authentication authentication
-    ) {
-        return deliverableService.getDeliverables(
-                        escrowId,
-                        authentication.getName()
-                )
-                .stream()
-                .map(DeliverableResponse::from)
-                .toList();
     }
 }

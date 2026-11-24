@@ -128,6 +128,14 @@ public class Deliverable {
         this.aiSummary = error;
     }
 
+    public void retryVerification() {
+        this.verificationStatus = "PENDING";
+        this.aiVerdict = null;
+        this.aiScore = null;
+        this.aiSummary = null;
+        this.verificationDetails = null;
+    }
+
     public Long getId() {
         return id;
     }

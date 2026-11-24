@@ -23,7 +23,9 @@ import com.escrow.backend.project.escrow.transaction.EscrowTransaction;
 import com.escrow.backend.project.escrow.transaction.EscrowTransactionRepository;
 import com.escrow.backend.project.escrow.verification.RepositoryVerificationClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.transaction.Transactional;
+import org.springframework.transaction.annotation.Transactional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -34,6 +36,9 @@ import java.util.Locale;
 
 @Service
 public class EscrowService {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(EscrowService.class);
 
     private final EscrowRepository escrowRepository;
     private final ProjectRepository projectRepository;
@@ -170,6 +175,19 @@ public class EscrowService {
         );
     }
 
+    @Transactional(readOnly = true)
+    public Escrow getEscrowByProjectId(Long projectId, String email) {
+        AppUser user = getUser(email);
+        Escrow escrow = escrowRepository.findByProjectId(projectId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Escrow not found for project " + projectId
+                ));
+
+        verifyParticipant(escrow, user);
+        return escrow;
+    }
+
     // --------------------------------------------------
     // RECORD BLOCKCHAIN TRANSACTION
     // --------------------------------------------------
@@ -192,6 +210,19 @@ public class EscrowService {
         if (transactionRepository.existsByTransactionHash(
                 request.transactionHash()
         )) {
+            // Check if this deposit was recorded previously but escrow was stuck in AWAITING_DEPOSIT
+            if (request.type() == com.escrow.backend.project.escrow.transaction.TransactionType.DEPOSIT
+                    && escrow.getStatus() == EscrowStatus.AWAITING_DEPOSIT) {
+                escrow.setDepositTransaction(request.transactionHash());
+                escrow.setBlockchainDetails(request.contractAddress(), request.chainId());
+                escrow.updateStatus(EscrowStatus.FUNDED);
+                projectService.markProjectInProgress(escrow.getProject().getId());
+                escrowRepository.save(escrow);
+                return transactionRepository.findByEscrowIdOrderByCreatedAtDesc(escrowId).stream()
+                        .filter(t -> request.transactionHash().equalsIgnoreCase(t.getTransactionHash()))
+                        .findFirst()
+                        .orElseThrow(() -> new EscrowOperationException("This transaction has already been recorded"));
+            }
             throw new EscrowOperationException(
                     "This transaction has already been recorded"
             );
@@ -275,6 +306,7 @@ public class EscrowService {
             }
         }
 
+        escrowRepository.save(escrow);
         return transactionRepository.save(transaction);
     }
 
@@ -321,6 +353,7 @@ public class EscrowService {
         deliverable = deliverableRepository.save(deliverable);
 
         escrow.updateStatus(EscrowStatus.SUBMITTED);
+        escrow = escrowRepository.save(escrow);
 
         try {
             RepositoryVerificationRequest verificationRequest =
@@ -350,6 +383,110 @@ public class EscrowService {
             );
 
         } catch (Exception ex) {
+
+            log.error(
+                    "AI verification failed for escrow {} and deliverable {}",
+                    escrowId,
+                    deliverable.getId(),
+                    ex
+            );
+
+            deliverable.markVerificationFailed(
+                    "Repository verification could not be completed. "
+                            + "Please try again later."
+            );
+        }
+
+        return deliverableRepository.save(deliverable);
+    }
+
+    // --------------------------------------------------
+    // RETRY AI VERIFICATION
+    // --------------------------------------------------
+
+    @Transactional
+    public Deliverable retryVerification(
+            Long escrowId,
+            Long deliverableId,
+            String email
+    ) {
+        AppUser user = getUser(email);
+        Escrow escrow = findEscrow(escrowId);
+
+        verifyParticipant(escrow, user);
+
+        if (escrow.getStatus() != EscrowStatus.SUBMITTED) {
+            throw new EscrowOperationException(
+                    "Escrow is not awaiting deliverable verification"
+            );
+        }
+
+        Deliverable deliverable = findDeliverable(
+                escrowId,
+                deliverableId
+        );
+
+        if (deliverable.getStatus() != DeliverableStatus.SUBMITTED) {
+            throw new EscrowOperationException(
+                    "Only submitted deliverables can be re-verified"
+            );
+        }
+
+        if (!"FAILED".equalsIgnoreCase(
+                deliverable.getVerificationStatus())) {
+            throw new EscrowOperationException(
+                    "Only failed AI verifications can be retried"
+            );
+        }
+
+        if (deliverable.getRepoUrl() == null
+                || deliverable.getRepoUrl().isBlank()) {
+            throw new EscrowOperationException(
+                    "Deliverable repository URL is missing"
+            );
+        }
+
+        deliverable.retryVerification();
+
+        try {
+            RepositoryVerificationRequest verificationRequest =
+                    new RepositoryVerificationRequest(
+                            deliverable.getRepoUrl(),
+                            deliverable.getDescription(),
+                            List.of(
+                                    "The repository must be publicly accessible.",
+                                    "The repository must contain relevant source code.",
+                                    "The repository must contain project documentation."
+                            )
+                    );
+
+            RepositoryVerificationResponse result =
+                    verificationClient.verify(verificationRequest);
+
+            if (result == null) {
+                throw new IllegalStateException(
+                        "AI verification returned no result"
+                );
+            }
+
+            String details = objectMapper.writeValueAsString(result);
+
+            deliverable.setVerificationResult(
+                    result.verdict(),
+                    result.score(),
+                    result.summary(),
+                    details
+            );
+
+        } catch (Exception ex) {
+
+            log.error(
+                    "AI verification retry failed for escrow {} and deliverable {}",
+                    escrowId,
+                    deliverableId,
+                    ex
+            );
+
             deliverable.markVerificationFailed(
                     "Repository verification could not be completed. "
                             + "Please try again later."
@@ -391,8 +528,39 @@ public class EscrowService {
             );
         }
 
+        // AI verification must finish before client approval.
+        if (!"COMPLETED".equalsIgnoreCase(
+                deliverable.getVerificationStatus())) {
+
+            throw new EscrowOperationException(
+                    "AI verification has not completed. "
+                            + "Please retry verification before approval."
+            );
+        }
+
+        // Do not allow approval of a rejected submission.
+        if ("REJECTED".equalsIgnoreCase(deliverable.getAiVerdict())) {
+
+            throw new EscrowOperationException(
+                    "AI verification rejected this submission. "
+                            + "Review the feedback or request a revision."
+            );
+        }
+
+        // Only these verdicts are eligible for client review.
+        if (!"APPROVED".equalsIgnoreCase(deliverable.getAiVerdict())
+                && !"NEEDS_REVIEW".equalsIgnoreCase(
+                        deliverable.getAiVerdict())) {
+
+            throw new EscrowOperationException(
+                    "AI verification returned an invalid verdict."
+            );
+        }
+
         deliverable.approve();
+        deliverableRepository.save(deliverable);
         escrow.updateStatus(EscrowStatus.APPROVED);
+        escrowRepository.save(escrow);
 
         return deliverable;
     }
@@ -431,7 +599,9 @@ public class EscrowService {
         }
 
         deliverable.requestRevision(feedback.trim());
+        deliverableRepository.save(deliverable);
         escrow.updateStatus(EscrowStatus.IN_PROGRESS);
+        escrowRepository.save(escrow);
 
         return deliverable;
     }

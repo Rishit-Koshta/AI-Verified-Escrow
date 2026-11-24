@@ -58,6 +58,12 @@ public class GlobalExceptionHandler {
         body.put("status", HttpStatus.BAD_REQUEST.value());
         body.put("error", "Validation failed");
         body.put("fieldErrors", fieldErrors);
+        String message = fieldErrors.isEmpty()
+                ? "Validation failed"
+                : fieldErrors.entrySet().stream()
+                        .map(e -> e.getKey() + ": " + e.getValue())
+                        .collect(java.util.stream.Collectors.joining("; "));
+        body.put("message", message);
 
         return ResponseEntity.badRequest().body(body);
     }
